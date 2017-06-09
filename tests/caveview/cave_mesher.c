@@ -25,8 +25,9 @@
 //#define STBVOX_CONFIG_UNPREMULTIPLY  // slower, fixes alpha test makes windows & fancy leaves look better
 //#define STBVOX_CONFIG_TEX1_EDGE_CLAMP
 #define STBVOX_CONFIG_DISABLE_TEX2
+//#define STBVOX_CONFIG_DOWN_TEXLERP_PACKED
+#define STBVOX_CONFIG_ROTATION_IN_LIGHTING
 
-#define STBVOX_ROTATION_IN_LIGHTING
 #define STB_VOXEL_RENDER_IMPLEMENTATION
 #include "stb_voxel_render.h"
 
@@ -406,12 +407,12 @@ void convert_fastchunk_inplace(fast_chunk *fc)
                bright = (lt[o]&15)*12 + 15 + (sky[o]&15)*16;
                if (bright > 255) bright = 255;
                if (bright <  32) bright =  32;
-               outb[o*2+0] = STBVOX_MAKE_LIGHTING((unsigned char) bright, (rot[o*2+0]&3));
+               outb[o*2+0] = STBVOX_MAKE_LIGHTING_EXT((unsigned char) bright, (rot[o*2+0]&3));
 
                bright = (lt[o]>>4)*12 + 15 + (sky[o]>>4)*16;
                if (bright > 255) bright = 255;
                if (bright <  32) bright =  32;
-               outb[o*2+1] = STBVOX_MAKE_LIGHTING((unsigned char) bright, (rot[o*2+1]&3));
+               outb[o*2+1] = STBVOX_MAKE_LIGHTING_EXT((unsigned char) bright, (rot[o*2+1]&3));
             }
          } else {
             // @TODO: if blocktype is in between others, this breaks; need to find which side has two pointers, and use that
@@ -426,12 +427,12 @@ void convert_fastchunk_inplace(fast_chunk *fc)
                bright = (lt[o]&15)*12 + 15 + (sky[o]&15)*16;
                if (bright > 255) bright = 255;
                if (bright <  32) bright =  32;
-               rot[o*2+0] = STBVOX_MAKE_LIGHTING((unsigned char) bright, (rot[o*2+0]&3));
+               rot[o*2+0] = STBVOX_MAKE_LIGHTING_EXT((unsigned char) bright, (rot[o*2+0]&3));
 
                bright = (lt[o]>>4)*12 + 15 + (sky[o]>>4)*16;
                if (bright > 255) bright = 255;
                if (bright <  32) bright =  32;
-               rot[o*2+1] = STBVOX_MAKE_LIGHTING((unsigned char) bright, (rot[o*2+1]&3));
+               rot[o*2+1] = STBVOX_MAKE_LIGHTING_EXT((unsigned char) bright, (rot[o*2+1]&3));
             }
 
             memcpy(outb, rot, 4096);

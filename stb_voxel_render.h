@@ -1,4 +1,4 @@
-// stb_voxel_render.h - v0.79 - Sean Barrett, 2015 - public domain
+// stb_voxel_render.h - v0.85 - Sean Barrett, 2015 - public domain
 //
 // This library helps render large-scale "voxel" worlds for games,
 // in this case, one with blocks that can have textures and that
@@ -13,7 +13,7 @@
 // It works by creating triangle meshes. The library includes
 //
 //    - converter from dense 3D arrays of block info to vertex mesh
-//    - shader for the vertex mesh
+//    - vertex & fragment shaders for the vertex mesh
 //    - assistance in setting up shader state
 //
 // For portability, none of the library code actually accesses
@@ -24,8 +24,9 @@
 // yourself. However, you could also try making a game with
 // a small enough world that it's fully loaded rather than
 // streaming. Currently the preferred vertex format is 20 bytes
-// per quad. There are plans to allow much more compact formats
-// with a slight reduction in shader features.
+// per quad. There are designs to allow much more compact formats
+// with a slight reduction in shader features, but no roadmap
+// for actually implementing them.
 //
 //
 // USAGE
@@ -108,13 +109,34 @@
 //        and avoids a potential slow path (gathering non-uniform
 //        data from uniforms) on some hardware.
 //
-//   In the future I hope to add additional modes that have significantly
+//   In the future I might add additional modes that have significantly
 //   smaller meshes but reduce features, down as small as 6 bytes per quad.
 //   See elsewhere in this file for a table of candidate modes. Switching
 //   to a mode will require changing some of your mesh creation code, but
 //   everything else should be seamless. (And I'd like to change the API
 //   so that mesh creation is data-driven the way the uniforms are, and
 //   then you wouldn't even have to change anything but the mode number.)
+//
+//
+// IMPROVEMENTS FOR SHIP-WORTHY PROGRAMS USING THIS LIBRARY
+//
+//   I currently tolerate a certain level of "bugginess" in this library.
+//
+//   I'm referring to things which look a little wrong (as long as they
+//   don't cause holes or cracks in the output meshes), or things which
+//   do not produce as optimal a mesh as possible. Notable examples:
+//
+//        -  incorrect lighting on slopes
+//        -  inefficient meshes for vheight blocks
+//
+//   I am willing to do the work to improve these things if someone is
+//   going to ship a substantial program that would be improved by them.
+//   (It need not be commercial, nor need it be a game.) I just didn't
+//   want to do the work up front if it might never be leveraged. So just
+//   submit a bug report as usual (github is preferred), but add a note
+//   that this is for a thing that is really going to ship. (That means
+//   you need to be far enough into the project that it's clear you're
+//   committed to it; not during early exploratory development.)
 //
 //
 // VOXEL MESH API
@@ -146,10 +168,11 @@
 //
 //     Because there is so much per-vertex and per-face data possible
 //     in the output, and each voxel can have 6 faces and 8 vertices, it
-//     would require an impossibly large data structure to describe all
-//     of the possibilities. Instead, the API provides multiple ways
-//     to express each property; each such way has some limitations on
-//     what it can express.
+//     would require an very large data structure to describe all
+//     of the possibilities, and this would cause the mesh-creation
+//     process to be slow. Instead, the API provides multiple ways
+//     to express each property, some more compact, others less so;
+//     each such way has some limitations on what it can express.
 //
 //     Note that there are so many paths and combinations, not all of them
 //     have been tested. Just report bugs and I'll fix 'em.
@@ -159,28 +182,44 @@
 //     See the API documentation in the header-file section.
 //
 //
-// HISTORICAL FOUNDATION
-//
-//   zmc engine         96-byte quads   2011/10
-//   zmc engine         32-byte quads   2013/12
-//   stb_voxel_render   20-byte quads   2015/01
-//
-//
 // CONTRIBUTORS
 //
 //   Features             Porting            Bugfixes & Warnings
 //  Sean Barrett                          github:r-leyh   Jesus Fernandez
 //                                        Miguel Lechon   github:Arbeiterunfallversicherungsgesetz
+//                                        Thomas Frase    James Hofmann
+//                                        Stephen Olsen   github:guitarfreak
 //
 // VERSION HISTORY
 //
-//   0.79   fix the missing types from 0.78; fix string constants being const
-//   0.78   bad "#else", compile as C++
-//   0.77   documentation tweaks, rename config var to STB_VOXEL_RENDER_STATIC
-//   0.76   typos, signed/unsigned shader issue, more documentation
-//   0.75   initial release
+//   0.85   (2017-03-03)  add block_selector (by guitarfreak)
+//   0.84   (2016-04-02)  fix GLSL syntax error on glModelView path
+//   0.83   (2015-09-13)  remove non-constant struct initializers to support more compilers
+//   0.82   (2015-08-01)  added input.packed_compact to store rot, vheight & texlerp efficiently
+//                        fix broken tex_overlay2
+//   0.81   (2015-05-28)  fix broken STBVOX_CONFIG_OPTIMIZED_VHEIGHT
+//   0.80   (2015-04-11)  fix broken STBVOX_CONFIG_ROTATION_IN_LIGHTING refactoring
+//                        change STBVOX_MAKE_LIGHTING to STBVOX_MAKE_LIGHTING_EXT so
+//                                    that header defs don't need to see config vars
+//                        add STBVOX_CONFIG_VHEIGHT_IN_LIGHTING and other vheight fixes
+//                        added documentation for vheight ("weird slopes")
+//   0.79   (2015-04-01)  fix the missing types from 0.78; fix string constants being const
+//   0.78   (2015-04-02)  bad "#else", compile as C++
+//   0.77   (2015-04-01)  documentation tweaks, rename config var to STB_VOXEL_RENDER_STATIC
+//   0.76   (2015-04-01)  typos, signed/unsigned shader issue, more documentation
+//   0.75   (2015-04-01)  initial release
 //
 //
+// HISTORICAL FOUNDATION
+//
+//   stb_voxel_render   20-byte quads   2015/01
+//   zmc engine         32-byte quads   2013/12
+//   zmc engine         96-byte quads   2011/10
+//
+//
+// LICENSE
+//
+//   See end of file for license information.
 
 #ifndef INCLUDE_STB_VOXEL_RENDER_H
 #define INCLUDE_STB_VOXEL_RENDER_H
@@ -225,7 +264,7 @@ extern "C" {
 //     modes 0,1,20,21, Z in the mesh can extend to 511 instead
 //     of 255. However, half-height blocks cannot be used.
 //
-// All of the following just #ifdef tested so need no values, and are optional.
+// All of the following are just #ifdef tested so need no values, and are optional.
 //
 //    STBVOX_CONFIG_BLOCKTYPE_SHORT
 //        use unsigned 16-bit values for 'blocktype' in the input instead of 8-bit values
@@ -265,7 +304,7 @@ extern "C" {
 //
 //    STBVOX_CONFIG_DISABLE_TEX2
 //        This disables all processing of texture 2 in the shader in case
-//        you don't use it. Eventually this will be replaced with a mode
+//        you don't use it. Eventually this could be replaced with a mode
 //        that omits the unused data entirely.
 //
 //    STBVOX_CONFIG_TEX1_EDGE_CLAMP
@@ -278,6 +317,11 @@ extern "C" {
 //    STBVOX_CONFIG_ROTATION_IN_LIGHTING
 //        Changes the meaning of the 'lighting' mesher input variable to also
 //        store the rotation; see later discussion.
+//
+//    STBVOX_CONFIG_VHEIGHT_IN_LIGHTING
+//        Changes the meaning of the 'lighting' mesher input variable to also
+//        store the vheight; see later discussion. Cannot use both this and
+//        the previous variable.
 //
 //    STBVOX_CONFIG_PREMULTIPLIED_ALPHA
 //        Adjusts the shader calculations on the assumption that tex1.rgba,
@@ -292,7 +336,6 @@ extern "C" {
 //        non-unit alpha values but not doing alpha-blending (for example
 //        when alpha testing).
 //
-
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -671,6 +714,11 @@ typedef struct
 
 // This is the data structure you fill out. Most of the arrays can be
 // NULL, except when one is required to get the value to index another.
+//
+// The compass system used in the following descriptions is:
+//     east means increasing x
+//     north means increasing y
+//     up means increasing z
 struct stbvox_input_description
 {
    unsigned char lighting_at_vertices;
@@ -697,19 +745,20 @@ struct stbvox_input_description
    // The raw lighting values are defined at the center of blocks
    // (or at vertex if 'lighting_at_vertices' is true).
    //
-   // If the macro STBVOX_ROTATION_IN_LIGHTING is defined,
+   // If the macro STBVOX_CONFIG_ROTATION_IN_LIGHTING is defined,
    // then an additional 2-bit block rotation value is stored
    // in this field as well.
    //
-   // Encode with STBVOX_MAKE_LIGHTING(lighting,rot)--here
+   // Encode with STBVOX_MAKE_LIGHTING_EXT(lighting,rot)--here
    // 'lighting' should still be 8 bits, as the macro will
-   // discard the bottom bits automatically.
+   // discard the bottom bits automatically. Similarly, if
+   // using STBVOX_CONFIG_VHEIGHT_IN_LIGHTING, encode with
+   // STBVOX_MAKE_LIGHTING_EXT(lighting,vheight).
    //
-   // (Rationale: rotation needs to
-   // be independent of blocktype, but is only 2 bits so
-   // doesn't want to be its own array. Lighting is the one
-   // thing that was likely to already be in use and that
-   // I could easily steal 2 bits from.)
+   // (Rationale: rotation needs to be independent of blocktype,
+   // but is only 2 bits so doesn't want to be its own array.
+   // Lighting is the one thing that was likely to already be
+   // in use and that I could easily steal 2 bits from.)
 
    stbvox_block_type *blocktype;
    // Indexed by 3D coordinate. This is a core "block type" value, which is used
@@ -944,18 +993,122 @@ struct stbvox_input_description
    // Indexed by 3D coordinates, this defines the four
    // vheight values to use if the geometry is STBVOX_GEOM_vheight*.
    // See the vheight discussion.
+
+   unsigned char *packed_compact;
+   // Stores block rotation, vheight, and texlerp values:
+   //    block rotation: 2 bits
+   //    vertex vheight: 2 bits
+   //    use_texlerp   : 1 bit
+   //    vertex texlerp: 3 bits
+   // If STBVOX_CONFIG_UP_TEXLERP_PACKED is defined, then 'vertex texlerp' is
+   // used for up faces if use_texlerp is 1. If STBVOX_CONFIG_DOWN_TEXLERP_PACKED
+   // is defined, then 'vertex texlerp' is used for down faces if use_texlerp is 1.
+   // Note if those symbols are defined but packed_compact is NULL, the normal
+   // texlerp default will be used.
+   // Encode with STBVOX_MAKE_PACKED_COMPACT(rot, vheight, texlerp, use_texlerp)
 };
 // @OPTIMIZE allow specializing; build a single struct with all of the
 // 3D-indexed arrays combined so it's AoS instead of SoA for better
 // cache efficiency
 
 
+//////////////////////////////////////////////////////////////////////////////
+//
+//  VHEIGHT DOCUMENTATION
+//
+//  "vheight" is the internal name for the special block types
+//  with sloped tops or bottoms. "vheight" stands for "vertex height".
+//
+//  Note that these blocks are very flexible (there are 256 of them,
+//  although at least 17 of them should never be used), but they
+//  also have a disadvantage that they generate extra invisible
+//  faces; the generator does not currently detect whether adjacent
+//  vheight blocks hide each others sides, so those side faces are
+//  always generated. For a continuous ground terrain, this means
+//  that you may generate 5x as many quads as needed. See notes
+//  on "improvements for shipping products" in the introduction.
+
 enum
 {
    STBVOX_VERTEX_HEIGHT_0,
    STBVOX_VERTEX_HEIGHT_half,
    STBVOX_VERTEX_HEIGHT_1,
+   STBVOX_VERTEX_HEIGHT_one_and_a_half,
 };
+// These are the "vheight" values. Vheight stands for "vertex height".
+// The idea is that for a "floor vheight" block, you take a cube and
+// reposition the top-most vertices at various heights as specified by
+// the vheight values. Similarly, a "ceiling vheight" block takes a
+// cube and repositions the bottom-most vertices.
+//
+// A floor block only adjusts the top four vertices; the bottom four vertices
+// remain at the bottom of the block. The height values are 2 bits,
+// measured in halves of a block; so you can specify heights of 0/2,
+// 1/2, 2/2, or 3/2. 0 is the bottom of the block, 1 is halfway
+// up the block, 2 is the top of the block, and 3 is halfway up the
+// next block (and actually outside of the block). The value 3 is
+// actually legal for floor vheight (but not ceiling), and allows you to:
+//
+//     (A) have smoother terrain by having slopes that cross blocks,
+//         e.g. (1,1,3,3) is a regular-seeming slope halfway between blocks
+//     (B) make slopes steeper than 45-degrees, e.g. (0,0,3,3)
+//
+// (Because only z coordinates have half-block precision, and x&y are
+// limited to block corner precision, it's not possible to make these
+// things "properly" out of blocks, e.g. a half-slope block on its side
+// or a sloped block halfway between blocks that's made out of two blocks.)
+//
+// If you define STBVOX_CONFIG_OPTIMIZED_VHEIGHT, then the top face
+// (or bottom face for a ceiling vheight block) will be drawn as a
+// single quad even if the four vertex heights aren't planar, and a
+// single normal will be used over the entire quad. If you
+// don't define it, then if the top face is non-planar, it will be
+// split into two triangles, each with their own normal/lighting.
+// (Note that since all output from stb_voxel_render is quad meshes,
+// triangles are actually rendered as degenerate quads.) In this case,
+// the distinction betwen STBVOX_GEOM_floor_vheight_03 and
+// STBVOX_GEOM_floor_vheight_12 comes into play; the former introduces
+// an edge from the SW to NE corner (i.e. from <0,0,?> to <1,1,?>),
+// while the latter introduces an edge from the NW to SE corner
+// (i.e. from <0,1,?> to <1,0,?>.) For a "lazy mesh" look, use
+// exclusively _03 or _12. For a "classic mesh" look, alternate
+// _03 and _12 in a checkerboard pattern. For a "smoothest surface"
+// look, choose the edge based on actual vertex heights.
+//
+// The four vertex heights can come from several places. The simplest
+// encoding is to just use the 'vheight' parameter which stores four
+// explicit vertex heights for every block. This allows total independence,
+// but at the cost of the largest memory usage, 1 byte per 3D block.
+// Encode this with STBVOX_MAKE_VHEIGHT(vh_sw, vh_se, vh_nw, vh_ne).
+// These coordinates are absolute, not affected by block rotations.
+//
+// An alternative if you just want to encode some very specific block
+// types, not all the possibilities--say you just want half-height slopes,
+// so you want (0,0,1,1) and (1,1,2,2)--then you can use block_vheight
+// to specify them. The geometry rotation will cause block_vheight values
+// to be rotated (because it's as if you're just defining a type of
+// block). This value is also encoded with STBVOX_MAKE_VHEIGHT.
+//
+// If you want to save memory and you're creating a "continuous ground"
+// sort of effect, you can make each vertex of the lattice share the
+// vheight value; that is, two adjacent blocks that share a vertex will
+// always get the same vheight value for that vertex. Then you need to
+// store two bits of vheight for every block, which you do by storing it
+// as part another data structure. Store the south-west vertex's vheight
+// with the block. You can either use the "geometry" mesh variable (it's
+// a parameter to STBVOX_MAKE_GEOMETRY) or you can store it in the
+// "lighting" mesh variable if you defined STBVOX_CONFIG_VHEIGHT_IN_LIGHTING,
+// using STBVOX_MAKE_LIGHTING_EXT(lighting,vheight).
+//
+// Note that if you start with a 2D height map and generate vheight data from
+// it, you don't necessarily store only one value per (x,y) coordinate,
+// as the same value may need to be set up at multiple z heights. For
+// example, if height(8,8) = 13.5, then you want the block at (8,8,13)
+// to store STBVOX_VERTEX_HEIGHT_half, and this will be used by blocks
+// at (7,7,13), (8,7,13), (7,8,13), and (8,8,13). However, if you're
+// allowing steep slopes, it might be the case that you have a block
+// at (7,7,12) which is supposed to stick up to 13.5; that means
+// you also need to store STBVOX_VERTEX_HEIGHT_one_and_a_half at (8,8,12).
 
 enum
 {
@@ -1008,12 +1161,10 @@ enum
 #define STBVOX_MAKE_COLOR(color,t1,t2) ((color)+(t1)*64+(t2)*128)
 #define STBVOX_MAKE_TEXLERP_VERT3(e,n,w,s,u)   ((e)+(n)*8+(w)*64+(s)*512+(u)*4096)
 #define STBVOX_MAKE_TEXLERP_FACE3(e,n,w,s,u,d) ((e)+(n)*8+(w)*64+(s)*512+(u)*4096+(d)*16384)
+#define STBVOX_MAKE_PACKED_COMPACT(rot, vheight, texlerp, def) ((rot)+4*(vheight)+16*(use)+32*(texlerp))
 
-#ifdef STBVOX_ROTATION_IN_LIGHTING
-#define STBVOX_MAKE_LIGHTING(lighting, rot)  (((lighting)&~3)+(rot))
-#else
+#define STBVOX_MAKE_LIGHTING_EXT(lighting, rot)  (((lighting)&~3)+(rot))
 #define STBVOX_MAKE_LIGHTING(lighting)       (lighting)
-#endif
 
 #ifndef STBVOX_MAX_MESHES
 #define STBVOX_MAX_MESHES      2           // opaque & transparent
@@ -1064,6 +1215,7 @@ struct stbvox_mesh_maker
 #include <assert.h>
 #include <string.h> // memset
 
+// have to use our own names to avoid the _MSC_VER path having conflicting type names
 #ifndef _MSC_VER
    #include <stdint.h>
    typedef uint16_t stbvox_uint16;
@@ -1085,7 +1237,12 @@ struct stbvox_mesh_maker
 #error "Must defined STBVOX_CONFIG_MODE to select the mode"
 #endif
 
-// The following are candidate voxel modes. Only modes 0, 1, and 20 are
+#if defined(STBVOX_CONFIG_ROTATION_IN_LIGHTING) && defined(STBVOX_CONFIG_VHEIGHT_IN_LIGHTING)
+#error "Can't store both rotation and vheight in lighting"
+#endif
+
+
+// The following are candidate voxel modes. Only modes 0, 1, and 20, and 21 are
 // currently implemented. Reducing the storage-per-quad further
 // shouldn't improve performance, although obviously it allow you
 // to create larger worlds without streaming.
@@ -1107,7 +1264,7 @@ struct stbvox_mesh_maker
 
 // not sure why I only wrote down the above "result data" and didn't preserve
 // the vertex formats, but here I've tried to reconstruct the designs...
-//     mode # 3 is wrong, one byte too large
+//     mode # 3 is wrong, one byte too large, but they may have been an error originally
 
 //            Mode:     0     1     2     3     4     5     6        10    11    12      20    21    22    23    24
 // =============================================================================================================
@@ -1435,7 +1592,7 @@ static const char *stbvox_vertex_program =
       "uniform vec3 normal_table[32];\n"
 
       #ifndef STBVOX_CONFIG_OPENGL_MODELVIEW
-         "uniform mat44 model_view;\n"
+         "uniform mat4x4 model_view;\n"
       #endif
 
       // fragment output data
@@ -1938,7 +2095,7 @@ stbvox_mesh_face stbvox_compute_mesh_face_value(stbvox_mesh_maker *mm, stbvox_ro
                face_data.tex1 = rep1;
          }
          if (mm->input.overlay_tex2) {
-            unsigned char rep2 = mm->input.overlay_tex1[over][over_face];
+            unsigned char rep2 = mm->input.overlay_tex2[over][over_face];
             if (rep2)
                face_data.tex2 = rep2;
          }
@@ -2158,10 +2315,10 @@ static unsigned char stbvox_hasface[STBVOX_MAX_GEOM][STBVOX_NUM_ROTATION] =
    { 31,31,31,31 }, // wall-projected diagonal with up face
    { 63,63,63,63 }, // crossed-pair has special handling, but avoid early-out
    { 63,63,63,63 }, // force
-   { 63,63,63,63 },
-   { 63,63,63,63 },
-   { 63,63,63,63 },
-   { 63,63,63,63 },
+   { 63,63,63,63 }, // vheight
+   { 63,63,63,63 }, // vheight
+   { 63,63,63,63 }, // vheight
+   { 63,63,63,63 }, // vheight
 };
 
 // this determines which face type above is visible on each side of the geometry
@@ -2261,7 +2418,7 @@ static unsigned char stbvox_rotate_vertex[8][4] =
    { 7,6,4,5 }, // zyx=111
 };
 
-#ifdef STBVOX_OPTIMIZED_VHEIGHT
+#ifdef STBVOX_CONFIG_OPTIMIZED_VHEIGHT
 // optimized vheight generates a single normal over the entire face, even if it's not planar
 static unsigned char stbvox_optimized_face_up_normal[4][4][4][4] =
 {
@@ -2521,6 +2678,30 @@ void stbvox_make_mesh_for_face(stbvox_mesh_maker *mm, stbvox_rotate rot, int fac
    // first compute texlerp into p1
    stbvox_mesh_vertex p1[4] = { 0 };
 
+   #if defined(STBVOX_CONFIG_DOWN_TEXLERP_PACKED) && defined(STBVOX_CONFIG_UP_TEXLERP_PACKED)
+      #define STBVOX_USE_PACKED(f) ((f) == STBVOX_FACE_up || (f) == STBVOX_FACE_down)
+   #elif defined(STBVOX_CONFIG_UP_TEXLERP_PACKED)
+      #define STBVOX_USE_PACKED(f) ((f) == STBVOX_FACE_up                           )
+   #elif defined(STBVOX_CONFIG_DOWN_TEXLERP_PACKED)
+      #define STBVOX_USE_PACKED(f) (                         (f) == STBVOX_FACE_down)
+   #endif
+
+   #if defined(STBVOX_CONFIG_DOWN_TEXLERP_PACKED) || defined(STBVOX_CONFIG_UP_TEXLERP_PACKED)
+   if (STBVOX_USE_PACKED(face)) {
+      if (!mm->input.packed_compact || 0==(mm->input.packed_compact[v_off]&16))
+         goto set_default;
+      p1[0] = (mm->input.packed_compact[v_off + mm->cube_vertex_offset[face][0]] >> 5);
+      p1[1] = (mm->input.packed_compact[v_off + mm->cube_vertex_offset[face][1]] >> 5);
+      p1[2] = (mm->input.packed_compact[v_off + mm->cube_vertex_offset[face][2]] >> 5);
+      p1[3] = (mm->input.packed_compact[v_off + mm->cube_vertex_offset[face][3]] >> 5);
+      p1[0] = stbvox_vertex_encode(0,0,0,0,p1[0]);
+      p1[1] = stbvox_vertex_encode(0,0,0,0,p1[1]);
+      p1[2] = stbvox_vertex_encode(0,0,0,0,p1[2]);
+      p1[3] = stbvox_vertex_encode(0,0,0,0,p1[3]);
+      goto skip;
+   }
+   #endif
+
    if (mm->input.block_texlerp) {
       stbvox_block_type bt = mm->input.blocktype[v_off];
       unsigned char val = mm->input.block_texlerp[bt];
@@ -2574,9 +2755,17 @@ void stbvox_make_mesh_for_face(stbvox_mesh_maker *mm, stbvox_rotate rot, int fac
          p1[0] = p1[1] = p1[2] = p1[3] = stbvox_vertex_encode(0,0,0,0,stbvox_vert_lerp_for_face_lerp[facelerp]);
       }
    } else {
-      p1[0] = p1[1] = p1[2] = p1[3] = stbvox_vertex_encode(0,0,0,0,7);
+      #if defined(STBVOX_CONFIG_UP_TEXLERP_PACKED) || defined(STBVOX_CONFIG_DOWN_TEXLERP_PACKED)
+      set_default:
+      #endif
+      p1[0] = p1[1] = p1[2] = p1[3] = stbvox_vertex_encode(0,0,0,0,7); // @TODO make this configurable
    }
 
+   #if defined(STBVOX_CONFIG_UP_TEXLERP_PACKED) || defined(STBVOX_CONFIG_DOWN_TEXLERP_PACKED)
+   skip:
+   #endif
+
+   // now compute lighting and store to vertices
    {
       stbvox_mesh_vertex *mv[4];
       stbvox_get_quad_vertex_pointer(mm, mesh, mv, face_data);
@@ -2593,7 +2782,7 @@ void stbvox_make_mesh_for_face(stbvox_mesh_maker *mm, stbvox_rotate rot, int fac
          } else {
             unsigned char *amb = &mm->input.lighting[v_off];
             int i,j;
-            #ifdef STBVOX_ROTATION_IN_LIGHTING
+            #if defined(STBVOX_CONFIG_ROTATION_IN_LIGHTING) || defined(STBVOX_CONFIG_VHEIGHT_IN_LIGHTING)
             #define STBVOX_GET_LIGHTING(light) ((light) & ~3)
             #define STBVOX_LIGHTING_ROUNDOFF   8
             #else
@@ -2636,7 +2825,6 @@ void stbvox_make_mesh_for_face(stbvox_mesh_maker *mm, stbvox_rotate rot, int fac
    }
 }
 
-#ifndef STBVOX_OPTIMIZED_VHEIGHT
 // get opposite-facing normal & texgen for opposite face, used to map up-facing vheight data to down-facing data
 static unsigned char stbvox_reverse_face[STBVF_count] =
 {
@@ -2646,7 +2834,7 @@ static unsigned char stbvox_reverse_face[STBVF_count] =
          0,       0,       0,       0, STBVF_ne_d, STBVF_ne_d, STBVF_nd, STBVF_nu
 };
 
-
+#ifndef STBVOX_CONFIG_OPTIMIZED_VHEIGHT
 // render non-planar quads by splitting into two triangles, rendering each as a degenerate quad
 static void stbvox_make_12_split_mesh_for_face(stbvox_mesh_maker *mm, stbvox_rotate rot, int face, int v_off, stbvox_pos pos, stbvox_mesh_vertex vertbase, stbvox_mesh_vertex *face_coord, unsigned char mesh, unsigned char *ht)
 {
@@ -2714,16 +2902,21 @@ static void stbvox_make_mesh_for_block(stbvox_mesh_maker *mm, stbvox_pos pos, in
 
    if (mm->input.selector)
       mesh = mm->input.selector[v_off];
-
+   else if (mm->input.block_selector)
+      mesh = mm->input.block_selector[mm->input.blocktype[v_off]];
+  
    // check if we're going off the end
    if (mm->output_cur[mesh][0] + mm->output_size[mesh][0]*6 > mm->output_end[mesh][0]) {
       mm->full = 1;
       return;
    }
 
-   #ifdef STBVOX_ROTATION_IN_LIGHTING
+   #ifdef STBVOX_CONFIG_ROTATION_IN_LIGHTING
    simple_rot = mm->input.lighting[v_off] & 3;
    #endif
+
+   if (mm->input.packed_compact)
+      simple_rot = mm->input.packed_compact[v_off] & 3;
 
    if (blockptr[ 1]==0) {
       rot.facerot = simple_rot;
@@ -2755,9 +2948,6 @@ static void stbvox_make_mesh_for_block(stbvox_mesh_maker *mm, stbvox_pos pos, in
       stbvox_make_mesh_for_face(mm, rot, STBVOX_FACE_west , v_off, pos, basevert, vmesh+4*STBVOX_FACE_west, mesh, STBVOX_FACE_west);
 }
 
-
-// void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_pos pos, int v_off)
-//
 // complex case for mesh generation: we have lots of different
 // block types, and we don't want to generate faces of blocks
 // if they're hidden by neighbors.
@@ -2766,8 +2956,6 @@ static void stbvox_make_mesh_for_block(stbvox_mesh_maker *mm, stbvox_pos pos, in
 // which tells us what face type is generated for each type of
 // geometry, and then a table that tells us whether that type
 // is hidden by a neighbor.
-
-
 static void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_pos pos, int v_off)
 {
    int ns_off = mm->y_stride_in_bytes;
@@ -2798,15 +2986,12 @@ static void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_po
       ngeo[4] = mm->input.geometry[v_off +      1];
       ngeo[5] = mm->input.geometry[v_off -      1];
 
-      #ifndef STBVOX_ROTATION_IN_LIGHTING
       rot = (geo >> 4) & 3;
       geo &= 15;
       for (i=0; i < 6; ++i) {
          nrot[i] = (ngeo[i] >> 4) & 3;
          ngeo[i] &= 15;
       }
-      #endif
-      STBVOX_NOTUSED(i);
    } else {
       int i;
       assert(mm->input.block_geometry);
@@ -2814,28 +2999,42 @@ static void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_po
       for (i=0; i < 6; ++i)
          ngeo[i] = mm->input.block_geometry[nbt[i]];
       if (mm->input.selector) {
-         #ifndef STBVOX_ROTATION_IN_LIGHTING
-         rot     = (mm->input.selector[v_off         ] >> 4) & 3;
-         nrot[0] = (mm->input.selector[v_off + ew_off] >> 4) & 3;
-         nrot[1] = (mm->input.selector[v_off + ns_off] >> 4) & 3;
-         nrot[2] = (mm->input.selector[v_off - ew_off] >> 4) & 3;
-         nrot[3] = (mm->input.selector[v_off - ns_off] >> 4) & 3;
-         nrot[4] = (mm->input.selector[v_off +      1] >> 4) & 3;
-         nrot[5] = (mm->input.selector[v_off -      1] >> 4) & 3;
+         #ifndef STBVOX_CONFIG_ROTATION_IN_LIGHTING
+         if (mm->input.packed_compact == NULL) {
+            rot     = (mm->input.selector[v_off         ] >> 4) & 3;
+            nrot[0] = (mm->input.selector[v_off + ew_off] >> 4) & 3;
+            nrot[1] = (mm->input.selector[v_off + ns_off] >> 4) & 3;
+            nrot[2] = (mm->input.selector[v_off - ew_off] >> 4) & 3;
+            nrot[3] = (mm->input.selector[v_off - ns_off] >> 4) & 3;
+            nrot[4] = (mm->input.selector[v_off +      1] >> 4) & 3;
+            nrot[5] = (mm->input.selector[v_off -      1] >> 4) & 3;
+         }
          #endif
       } else {
-         #ifndef STBVOX_ROTATION_IN_LIGHTING
-         rot = (geo>>4)&3;
-         geo &= 15;
-         for (i=0; i < 6; ++i) {
-            nrot[i] = (ngeo[i]>>4)&3;
-            ngeo[i] &= 15;
+         #ifndef STBVOX_CONFIG_ROTATION_IN_LIGHTING
+         if (mm->input.packed_compact == NULL) {
+            rot = (geo>>4)&3;
+            geo &= 15;
+            for (i=0; i < 6; ++i) {
+               nrot[i] = (ngeo[i]>>4)&3;
+               ngeo[i] &= 15;
+            }
          }
          #endif
       }
    }
 
-   #ifdef STBVOX_ROTATION_IN_LIGHTING
+   #ifndef STBVOX_CONFIG_ROTATION_IN_LIGHTING
+   if (mm->input.packed_compact) {
+      rot = mm->input.packed_compact[rot] & 3;
+      nrot[0] = mm->input.packed_compact[v_off + ew_off] & 3;
+      nrot[1] = mm->input.packed_compact[v_off + ns_off] & 3;
+      nrot[2] = mm->input.packed_compact[v_off - ew_off] & 3;
+      nrot[3] = mm->input.packed_compact[v_off - ns_off] & 3;
+      nrot[4] = mm->input.packed_compact[v_off +      1] & 3;
+      nrot[5] = mm->input.packed_compact[v_off -      1] & 3;
+   }
+   #else
    rot = mm->input.lighting[v_off] & 3;
    nrot[0] = (mm->input.lighting[v_off + ew_off]) & 3;
    nrot[1] = (mm->input.lighting[v_off + ns_off]) & 3;
@@ -2914,7 +3113,9 @@ static void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_po
    mesh = mm->default_mesh;
    if (mm->input.selector)
       mesh = mm->input.selector[v_off];
-
+   else if (mm->input.block_selector)
+      mesh = mm->input.block_selector[bt];
+  
    if (geo <= STBVOX_GEOM_ceil_slope_north_is_bottom) {
       // this is the simple case, we can just use regular block gen with special vmesh calculated with vheight
       stbvox_mesh_vertex basevert;
@@ -2935,7 +3136,9 @@ static void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_po
       basevert = stbvox_vertex_encode(pos.x, pos.y, pos.z << STBVOX_CONFIG_PRECISION_Z, 0,0);
       if (mm->input.selector) {
          mesh = mm->input.selector[v_off];
-      }
+      } else if (mm->input.block_selector)
+         mesh = mm->input.block_selector[bt];
+
 
       // check if we're going off the end
       if (mm->output_cur[mesh][0] + mm->output_size[mesh][0]*6 > mm->output_end[mesh][0]) {
@@ -3000,6 +3203,12 @@ static void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_po
       int extreme;
 
       // extract the heights
+      #ifdef STBVOX_CONFIG_VHEIGHT_IN_LIGHTING
+      ht[0] = mm->input.lighting[v_off              ] & 3;
+      ht[1] = mm->input.lighting[v_off+ew_off       ] & 3;
+      ht[2] = mm->input.lighting[v_off       +ns_off] & 3;
+      ht[3] = mm->input.lighting[v_off+ew_off+ns_off] & 3;
+      #else
       if (mm->input.vheight) {
          unsigned char v =  mm->input.vheight[v_off];
          ht[0] = (v >> 0) & 3;
@@ -3018,9 +3227,20 @@ static void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_po
 
          for (i=0; i < 4; ++i)
             ht[i] = raw[stbvox_rotate_vertex[i][rot]];
+      } else if (mm->input.packed_compact) {
+         ht[0] = (mm->input.packed_compact[v_off              ] >> 2) & 3;
+         ht[1] = (mm->input.packed_compact[v_off+ew_off       ] >> 2) & 3;
+         ht[2] = (mm->input.packed_compact[v_off       +ns_off] >> 2) & 3;
+         ht[3] = (mm->input.packed_compact[v_off+ew_off+ns_off] >> 2) & 3;
+      } else if (mm->input.geometry) {
+         ht[0] = mm->input.geometry[v_off              ] >> 6;
+         ht[1] = mm->input.geometry[v_off+ew_off       ] >> 6;
+         ht[2] = mm->input.geometry[v_off       +ns_off] >> 6;
+         ht[3] = mm->input.geometry[v_off+ew_off+ns_off] >> 6;
       } else {
          assert(0);
       }
+      #endif
 
       // flag whether any sides go off the top of the block, which means
       // our visible_faces test was wrong
@@ -3072,7 +3292,7 @@ static void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_po
             // flat
             stbvox_make_mesh_for_face(mm, rotate, STBVOX_FACE_up  , v_off, pos, basevert, vmesh[STBVOX_FACE_up], mesh, STBVOX_FACE_up);
          else {
-         #ifndef STBVOX_OPTIMIZED_VHEIGHT
+         #ifndef STBVOX_CONFIG_OPTIMIZED_VHEIGHT
             // check if it's non-planar
             if (cube[5] + cube[6] != cube[4] + cube[7]) {
                // not planar, split along diagonal and make degenerate quads
@@ -3092,7 +3312,7 @@ static void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_po
             // flat
             stbvox_make_mesh_for_face(mm, rotate, STBVOX_FACE_down, v_off, pos, basevert, vmesh[STBVOX_FACE_down], mesh, STBVOX_FACE_down);
          else {
-         #ifndef STBVOX_OPTIMIZED_VHEIGHT
+         #ifndef STBVOX_CONFIG_OPTIMIZED_VHEIGHT
             // check if it's non-planar
             if (cube[1] + cube[2] != cube[0] + cube[3]) {
                // not planar, split along diagonal and make degenerate quads
@@ -3138,6 +3358,9 @@ static void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_po
          mesh = mm->input.selector[v_off];
          simple_rot = mesh >> 4;
          mesh &= 15;
+      } 
+      if (mm->input.block_selector) {
+         mesh = mm->input.block_selector[bt];
       }
 
       // check if we're going off the end
@@ -3171,17 +3394,21 @@ static void stbvox_make_mesh_for_block_with_geo(stbvox_mesh_maker *mm, stbvox_po
 
 static void stbvox_make_mesh_for_column(stbvox_mesh_maker *mm, int x, int y, int z0)
 {
-   stbvox_pos pos = { x,y,0 };
+   stbvox_pos pos;
    int v_off = x * mm->x_stride_in_bytes + y * mm->y_stride_in_bytes;
    int ns_off = mm->y_stride_in_bytes;
    int ew_off = mm->x_stride_in_bytes;
+   pos.x = x;
+   pos.y = y;
+   pos.z = 0;
    if (mm->input.geometry) {
       unsigned char *bt  = mm->input.blocktype + v_off;
       unsigned char *geo = mm->input.geometry + v_off;
       int z;
       for (z=z0; z < mm->z1; ++z) {
          if (bt[z] && ( !bt[z+ns_off] || !STBVOX_GET_GEO(geo[z+ns_off]) || !bt[z-ns_off] || !STBVOX_GET_GEO(geo[z-ns_off])
-                      || !bt[z+ew_off] || !STBVOX_GET_GEO(geo[z+ew_off]) || !bt[z-ew_off] || !STBVOX_GET_GEO(geo[z-ew_off])))
+                      || !bt[z+ew_off] || !STBVOX_GET_GEO(geo[z+ew_off]) || !bt[z-ew_off] || !STBVOX_GET_GEO(geo[z-ew_off])
+                      || !bt[z-1] || !STBVOX_GET_GEO(geo[z-1]) || !bt[z+1] || !STBVOX_GET_GEO(geo[z+1])))
          {  // TODO check up and down
             pos.z = z;
             stbvox_make_mesh_for_block_with_geo(mm, pos, v_off+z);
@@ -3476,7 +3703,7 @@ int main(int argc, char **argv)
 //   - test API for texture rotation on side faces
 //   - API for texture rotation on top & bottom
 //   - better culling of vheight faces with vheight neighbors
-//   - better culling of non-vheight faces with fheight neighbors
+//   - better culling of non-vheight faces with vheight neighbors
 //   - gather vertex lighting from slopes correctly
 //   - better support texture edge_clamp: currently if you fall
 //     exactly on 1.0 you get wrapped incorrectly; this is rare, but
@@ -3532,3 +3759,45 @@ int main(int argc, char **argv)
 // (v:  x:2,y:2,z:2,light:2)
 
 #endif // STB_VOXEL_RENDER_IMPLEMENTATION
+
+/*
+------------------------------------------------------------------------------
+This software is available under 2 licenses -- choose whichever you prefer.
+------------------------------------------------------------------------------
+ALTERNATIVE A - MIT License
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of 
+this software and associated documentation files (the "Software"), to deal in 
+the Software without restriction, including without limitation the rights to 
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies 
+of the Software, and to permit persons to whom the Software is furnished to do 
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all 
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE 
+SOFTWARE.
+------------------------------------------------------------------------------
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this 
+software, either in source code form or as a compiled binary, for any purpose, 
+commercial or non-commercial, and by any means.
+In jurisdictions that recognize copyright laws, the author or authors of this 
+software dedicate any and all copyright interest in the software to the public 
+domain. We make this dedication for the benefit of the public at large and to 
+the detriment of our heirs and successors. We intend this dedication to be an 
+overt act of relinquishment in perpetuity of all present and future rights to 
+this software under copyright law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN 
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION 
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+------------------------------------------------------------------------------
+*/

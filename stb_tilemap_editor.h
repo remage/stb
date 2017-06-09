@@ -1,4 +1,4 @@
-// stb_tilemap_editor.h - v0.30 - Sean Barrett - http://nothings.org/stb
+// stb_tilemap_editor.h - v0.38 - Sean Barrett - http://nothings.org/stb
 // placed in the public domain - not copyrighted - first released 2014-09
 //
 // Embeddable tilemap editor for C/C++
@@ -259,7 +259,7 @@
 //      #define STBTE_MAX_CATEGORIES     100
 //      #define STBTE_UNDO_BUFFER_BYTES  (1 << 24) // 16 MB
 //      #define STBTE_MAX_COPY           90000  // e.g. 300x300
-//      #define STBTE_MAX_PROPERTIESERTIES     10     // max properties per tile
+//      #define STBTE_MAX_PROPERTIES     10     // max properties per tile
 //
 // API
 //
@@ -275,6 +275,13 @@
 //   either approach allows cut&pasting between levels.)
 //
 // REVISION HISTORY
+//   0.38  fix warning
+//   0.37  fix warning
+//   0.36  minor compiler support
+//   0.35  layername button changes
+//          - layername buttons grow with the layer panel
+//          - fix stbte_create_map being declared as stbte_create
+//          - fix declaration of stbte_create_map
 //   0.30  properties release
 //          - properties panel for editing user-defined "object" properties
 //          - can link each tile to one other tile
@@ -296,17 +303,21 @@
 //   Support STBTE_HITTEST_TILE above
 //  ?Cancel drags by clicking other button? - may be fixed
 //   Finish support for toolbar at side
-//   Layer name buttons grow to fill box
 //
 // CREDITS
 //
-//   Written by Sean Barrett, September & October 2014.
+//
+//   Main editor & features
+//      Sean Barrett
+//   Additional features:
+//      Josh Huelsman
+//   Bugfixes:
+//      Ryan Whitworth
+//      Eugene Opalev
 //
 // LICENSE
 //
-//   This software has been placed in the public domain by its author.
-//   Where that dedication is not recognized, you are granted a perpetual,
-//   irrevocable license to copy and modify this file as you see fit.
+//   See end of file for license information.
 
 
 
@@ -316,6 +327,14 @@
 
 #ifndef STB_TILEMAP_INCLUDE_STB_TILEMAP_EDITOR_H
 #define STB_TILEMAP_INCLUDE_STB_TILEMAP_EDITOR_H
+
+#ifdef _WIN32
+  #ifndef _CRT_SECURE_NO_WARNINGS
+  #define _CRT_SECURE_NO_WARNINGS
+  #endif
+  #include <stdlib.h>
+  #include <stdio.h>
+#endif
 
 typedef struct stbte_tilemap stbte_tilemap;
 
@@ -339,7 +358,7 @@ enum
 // creation
 //
 
-extern stbte_tilemap *stbte_create(int map_x, int map_y, int map_layers, int spacing_x, int spacing_y, int max_tiles);
+extern stbte_tilemap *stbte_create_map(int map_x, int map_y, int map_layers, int spacing_x, int spacing_y, int max_tiles);
 // create an editable tilemap
 //   map_x      : dimensions of map horizontally (user can change this in editor), <= STBTE_MAX_TILEMAP_X
 //   map_y      : dimensions of map vertically (user can change this in editor)    <= STBTE_MAX_TILEMAP_Y
@@ -352,7 +371,7 @@ extern stbte_tilemap *stbte_create(int map_x, int map_y, int map_layers, int spa
 
 extern void stbte_define_tile(stbte_tilemap *tm, unsigned short id, unsigned int layermask, const char * category);
 // call this repeatedly for each tile to install the tile definitions into the editable tilemap
-//   tm        : tilemap created by stbte_create
+//   tm        : tilemap created by stbte_create_map
 //   id        : unique identifier for each tile, 0 <= id < 32768
 //   layermask : bitmask of which layers tile is allowed on: 1 = layer 0, 255 = layers 0..7
 //               (note that onscreen, the editor numbers the layers from 1 not 0)
@@ -938,6 +957,7 @@ struct stbte_tilemap
     int tileinfo_dirty;
     stbte__layer layerinfo[STBTE_MAX_LAYERS];
     int has_layer_names;
+    int layername_width;
     int layer_scroll;
     int propmode;
     int solo_layer;
@@ -1016,6 +1036,7 @@ stbte_tilemap *stbte_create_map(int map_x, int map_y, int map_layers, int spacin
    tm->layer_scroll = 0;
    tm->propmode = 0;
    tm->has_layer_names = 0;
+   tm->layername_width = 0;
    tm->undo_available_valid = 0;
 
    for (i=0; i < tm->num_layers; ++i) {
@@ -1088,12 +1109,17 @@ void stbte_define_tile(stbte_tilemap *tm, unsigned short id, unsigned int layerm
    tm->tileinfo_dirty = 1;
 }
 
+static int stbte__text_width(const char *str);
+
 void stbte_set_layername(stbte_tilemap *tm, int layer, const char *layername)
 {
    STBTE_ASSERT(layer >= 0 && layer < tm->num_layers);
    if (layer >= 0 && layer < tm->num_layers) {
+      int width;
       tm->layerinfo[layer].name = layername;
       tm->has_layer_names = 1;
+      width = stbte__text_width(layername);
+      tm->layername_width = (width > tm->layername_width ? width : tm->layername_width);
    }
 }
 
@@ -3329,7 +3355,7 @@ static void stbte__toolbar(stbte_tilemap *tm, int x0, int y0, int w, int h)
 
 #define STBTE__TEXTCOLOR(n)  stbte__color_table[n][STBTE__text][STBTE__idle]
 
-static int stbte__info_value(char *label, int x, int y, int val, int digits, int id)
+static int stbte__info_value(const char *label, int x, int y, int val, int digits, int id)
 {
    if (stbte__ui.event == STBTE__paint) {
       int off = 9-stbte__get_char_width(label[0]);
@@ -3382,14 +3408,21 @@ static void stbte__info(stbte_tilemap *tm, int x0, int y0, int w, int h)
 
 static void stbte__layers(stbte_tilemap *tm, int x0, int y0, int w, int h)
 {
-   int i, y, n;
-   int x1 = x0+w;
-   int y1 = y0+h;
-   int xoff = tm->has_layer_names ? 50 : 20;
    static char *propmodes[3] = {
       "default", "always", "never"
    };
    int num_rows;
+   int i, y, n;
+   int x1 = x0+w;
+   int y1 = y0+h;
+   int xoff = 20;
+   
+   if (tm->has_layer_names) {
+      int side = stbte__ui.panel[STBTE__panel_layers].side;
+      xoff = stbte__region[side].width - 42;
+      xoff = (xoff < tm->layername_width + 10 ? xoff : tm->layername_width + 10);
+   }
+
    x0 += 2;
    y0 += 5;
    if (!tm->has_layer_names) {
@@ -3427,7 +3460,7 @@ static void stbte__layers(stbte_tilemap *tm, int x0, int y0, int w, int h)
    n = stbte__text_width("prop:")+2;
    stbte__draw_text(x0,y+2, "prop:", w, STBTE__TEXTCOLOR(STBTE__cpanel));
    i = w - n - 4;
-   if (i > 45) i = 45;
+   if (i > 50) i = 50;
    if (stbte__button(STBTE__clayer_button, propmodes[tm->propmode], x0+n,y,0,i, STBTE__ID(STBTE__layer,256), 0,0))
       tm->propmode = (tm->propmode+1)%3;
 #endif
@@ -4095,3 +4128,45 @@ void stbte_mouse_sdl(stbte_tilemap *tm, const void *sdl_event, float xs, float y
 }
 
 #endif // STB_TILEMAP_EDITOR_IMPLEMENTATION
+
+/*
+------------------------------------------------------------------------------
+This software is available under 2 licenses -- choose whichever you prefer.
+------------------------------------------------------------------------------
+ALTERNATIVE A - MIT License
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of 
+this software and associated documentation files (the "Software"), to deal in 
+the Software without restriction, including without limitation the rights to 
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies 
+of the Software, and to permit persons to whom the Software is furnished to do 
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all 
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE 
+SOFTWARE.
+------------------------------------------------------------------------------
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this 
+software, either in source code form or as a compiled binary, for any purpose, 
+commercial or non-commercial, and by any means.
+In jurisdictions that recognize copyright laws, the author or authors of this 
+software dedicate any and all copyright interest in the software to the public 
+domain. We make this dedication for the benefit of the public at large and to 
+the detriment of our heirs and successors. We intend this dedication to be an 
+overt act of relinquishment in perpetuity of all present and future rights to 
+this software under copyright law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN 
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION 
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+------------------------------------------------------------------------------
+*/
