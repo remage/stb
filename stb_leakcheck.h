@@ -1,4 +1,4 @@
-// stb_leakcheck.h - v0.3 - quick & dirty malloc leak-checking - public domain
+// stb_leakcheck.h - v0.5 - quick & dirty malloc leak-checking - public domain
 // LICENSE
 //
 //   See end of file.
@@ -22,7 +22,7 @@ typedef struct malloc_info stb_leakcheck_malloc_info;
 
 struct malloc_info
 {
-   char *file;
+   const char *file;
    int line;
    size_t size;
    stb_leakcheck_malloc_info *next,*prev;
@@ -30,7 +30,7 @@ struct malloc_info
 
 static stb_leakcheck_malloc_info *mi_head;
 
-void *stb_leakcheck_malloc(size_t sz, char *file, int line)
+void *stb_leakcheck_malloc(size_t sz, const char *file, int line)
 {
    stb_leakcheck_malloc_info *mi = (stb_leakcheck_malloc_info *) malloc(sz + sizeof(*mi));
    if (mi == NULL) return mi;
@@ -58,11 +58,12 @@ void stb_leakcheck_free(void *ptr)
          mi->prev->next = mi->next;
       if (mi->next)
          mi->next->prev = mi->prev;
+      free(mi);
       #endif
    }
 }
 
-void *stb_leakcheck_realloc(void *ptr, size_t sz, char *file, int line)
+void *stb_leakcheck_realloc(void *ptr, size_t sz, const char *file, int line)
 {
    if (ptr == NULL) {
       return stb_leakcheck_malloc(sz, file, line);
@@ -88,19 +89,41 @@ void *stb_leakcheck_realloc(void *ptr, size_t sz, char *file, int line)
    }
 }
 
+static void stblkck_internal_print(const char *reason, stb_leakcheck_malloc_info *mi)
+{
+#if defined(_MSC_VER) && _MSC_VER < 1900 // 1900=VS 2015
+   // Compilers that use the old MS C runtime library don't have %zd
+   // and the older ones don't even have %lld either... however, the old compilers
+   // without "long long" don't support 64-bit targets either, so here's the
+   // compromise:
+   #if _MSC_VER < 1400 // before VS 2005
+      printf("%s: %s (%4d): %8d bytes at %p\n", reason, mi->file, mi->line, (int)mi->size, (void*)(mi+1));
+   #else
+      printf("%s: %s (%4d): %16lld bytes at %p\n", reason, mi->file, mi->line, (long long)mi->size, (void*)(mi+1));
+   #endif
+#else
+   // Assume we have %zd on other targets.
+   #ifdef __MINGW32__
+      __mingw_printf("%s: %s (%4d): %zd bytes at %p\n", reason, mi->file, mi->line, mi->size, (void*)(mi+1));
+   #else
+      printf("%s: %s (%4d): %zd bytes at %p\n", reason, mi->file, mi->line, mi->size, (void*)(mi+1));
+   #endif
+#endif
+}
+
 void stb_leakcheck_dumpmem(void)
 {
    stb_leakcheck_malloc_info *mi = mi_head;
    while (mi) {
       if ((ptrdiff_t) mi->size >= 0)
-         printf("LEAKED: %s (%4d): %8d bytes at %p\n", mi->file, mi->line, (int) mi->size, mi+1);
+         stblkck_internal_print("LEAKED", mi);
       mi = mi->next;
    }
    #ifdef STB_LEAKCHECK_SHOWALL
    mi = mi_head;
    while (mi) {
       if ((ptrdiff_t) mi->size < 0)
-         printf("FREED : %s (%4d): %8d bytes at %p\n", mi->file, mi->line, (int) ~mi->size, mi+1);
+         stblkck_internal_print("FREED ", mi);
       mi = mi->next;
    }
    #endif
@@ -110,12 +133,14 @@ void stb_leakcheck_dumpmem(void)
 #ifndef INCLUDE_STB_LEAKCHECK_H
 #define INCLUDE_STB_LEAKCHECK_H
 
+#include <stdlib.h> // we want to define the macros *after* stdlib to avoid a slew of errors
+
 #define malloc(sz)    stb_leakcheck_malloc(sz, __FILE__, __LINE__)
 #define free(p)       stb_leakcheck_free(p)
 #define realloc(p,sz) stb_leakcheck_realloc(p,sz, __FILE__, __LINE__)
 
-extern void * stb_leakcheck_malloc(size_t sz, char *file, int line);
-extern void * stb_leakcheck_realloc(void *ptr, size_t sz, char *file, int line);
+extern void * stb_leakcheck_malloc(size_t sz, const char *file, int line);
+extern void * stb_leakcheck_realloc(void *ptr, size_t sz, const char *file, int line);
 extern void   stb_leakcheck_free(void *ptr);
 extern void   stb_leakcheck_dumpmem(void);
 
